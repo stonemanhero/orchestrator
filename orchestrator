@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+set -e
+
+APP_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+PORT=1420
+URL="http://127.0.0.1:${PORT}"
+CONFIG_DIR="${HOME}/.config/orchestrator"
+SYMLINK_PATH="${HOME}/.local/bin/orchestrator"
+DESKTOP_PATH="${HOME}/.local/share/applications/orchestrator.desktop"
+TAURI_BIN="${APP_DIR}/src-tauri/target/release/orchestrator"
+LOG_FILE="/tmp/orchestrator-daemon.log"
+
+# Dynamically resolve Node.js v22+ (checks PATH first, then ~/.nvm)
+resolve_node() {
+  if command -v node >/dev/null 2>&1; then
+    local ver
+    ver="$(node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1)"
+    if [ -n "$ver" ] && [ "$ver" -ge 22 ] 2>/dev/null; then
+      command -v node
+      return 0
+    fi
+  fi
+
+  if [ -d "${HOME}/.nvm/versions/node" ]; then
+    local nvm_node
+    nvm_node="$(find "${HOME}/.nvm/versions/node" -maxdepth 3 -name node -type f 2>/dev/null | sort -V | tail -n 1)"
+    if [ -n "$nvm_node" ] && [ -x "$nvm_node" ]; then
+      echo "$nvm_node"
+      return 0
+    fi
+  fi
+
+  if command -v node >/dev/null 2>&1; then
+    command -v node
+    return 0
+  fi
+
+  echo "Error: Node.js v22+ is required but was not found." >&2
+  exit 1
+}
+
+NODE_BIN="$(resolve_node)"
+NODE_DIR="$(dirname "$NODE_BIN")"
+export PATH="${NODE_DIR}:${PATH}"
+
+is_daemon_running() {
+  curl -s "${URL}/api/logs" >/dev/null 2>&1
+}
+
+start_daemon() {
+  if ! is_daemon_running; then
+    nohup "$NODE_BIN" --experimental-strip-types "${APP_DIR}/server/prod-server.ts" </dev/null >"${LOG_FILE}" 2>&1 &
+    for _ in {1..30}; do
+      if is_daemon_running; then
+        break
+      fi
+      sleep 0.1
+    done
+  fi
+}
+
+stop_daemon() {
+  pkill -f "server/prod-server.ts" 2>/dev/null || true
+}
+
+stop_app() {
+  pkill -f "target/release/orchestrator" 2>/dev/null || true
+  stop_daemon
+}
+
+launch_ui() {
+  start_daemon
+  if [ -x "${TAURI_BIN}" ]; then
+    nohup "${TAURI_BIN}" "$@" </dev/null >/dev/null 2>&1 &
+  else
+    nohup google-chrome --app="${URL}" --class="Orchestrator" --new-window </dev/null >/dev/null 2>&1 &
+  fi
+}
+
+cmd_install() {
+  echo "==> Installing Orchestrator from ${APP_DIR}..."
+  echo "    Using Node: $(${NODE_BIN} -v) (${NODE_BIN})"
+
+  mkdir -p "${CONFIG_DIR}"
+
+  echo "==> Installing npm dependencies & building frontend..."
+  (cd "${APP_DIR}" && npm install && npm run build)
+
+  if [ ! -x "${TAURI_BIN}" ] || [ "$1" = "--tauri" ]; then
+    if command -v cargo >/dev/null 2>&1; then
+      echo "==> Building native Tauri desktop binary (cargo build --release)..."
+      (cd "${APP_DIR}/src-tauri" && cargo build --release) || echo "    Warning: Tauri build failed; will use Chrome app window fallback."
+    else
+      echo "==> Rust/Cargo not found; skipping native Tauri binary build (will use Chrome app window fallback)."
+    fi
+  fi
+
+  echo "==> Creating CLI symlink at ${SYMLINK_PATH}..."
+  mkdir -p "$(dirname "${SYMLINK_PATH}")"
+  chmod +x "${APP_DIR}/orchestrator"
+  ln -sf "${APP_DIR}/orchestrator" "${SYMLINK_PATH}"
+
+  echo "==> Creating desktop launcher at ${DESKTOP_PATH}..."
+  mkdir -p "$(dirname "${DESKTOP_PATH}")"
+  cat > "${DESKTOP_PATH}" <<EOF
+[Desktop Entry]
+Name=Orchestrator
+Comment=Manage Projects, Docker Compose Stacks, PhpStorm, Chrome Profiles & Container NPM Tasks
+Exec=${APP_DIR}/orchestrator
+Icon=${APP_DIR}/src-tauri/icons/128x128.png
+Terminal=false
+Type=Application
+Categories=Development;IDE;Utility;
+StartupWMClass=orchestrator
+EOF
+
+  echo "==> Starting background daemon..."
+  stop_daemon
+  start_daemon
+
+  echo "✓ Orchestrator installed! Launch it from your App Menu or by running 'orchestrator'."
+}
+
+cmd_update() {
+  echo "==> Updating Orchestrator in ${APP_DIR}..."
+  if [ -d "${APP_DIR}/.git" ]; then
+    (cd "${APP_DIR}" && git pull)
+  fi
+
+  echo "==> Installing npm dependencies & rebuilding frontend..."
+  (cd "${APP_DIR}" && npm install && npm run build)
+
+  if [ "$1" = "--tauri" ] && command -v cargo >/dev/null 2>&1; then
+    echo "==> Rebuilding native Tauri desktop binary..."
+    (cd "${APP_DIR}/src-tauri" && cargo build --release)
+  fi
+
+  echo "==> Restarting background daemon..."
+  stop_daemon
+  start_daemon
+  echo "✓ Orchestrator updated and daemon restarted at ${URL}"
+}
+
+cmd_uninstall() {
+  echo "==> Stopping Orchestrator..."
+  stop_app
+
+  echo "==> Removing symlink and desktop entry..."
+  rm -f "${SYMLINK_PATH}"
+  rm -f "${DESKTOP_PATH}"
+  rm -f "${LOG_FILE}"
+
+  if [ "$1" = "--purge" ]; then
+    echo "==> Removing saved configuration at ${CONFIG_DIR}..."
+    rm -rf "${CONFIG_DIR}"
+  else
+    echo "    (Saved configs kept in ${CONFIG_DIR}. Run 'orchestrator uninstall --purge' to delete configs too.)"
+  fi
+
+  echo "✓ Orchestrator uninstalled."
+}
+
+cmd_status() {
+  if is_daemon_running; then
+    echo "Orchestrator daemon: RUNNING (${URL})"
+  else
+    echo "Orchestrator daemon: STOPPED"
+  fi
+  echo "Config directory:    ${CONFIG_DIR}"
+  echo "CLI symlink:         ${SYMLINK_PATH}"
+  echo "Desktop entry:       ${DESKTOP_PATH}"
+}
+
+cmd_help() {
+  cat <<EOF
+Orchestrator — Project Switcher & Docker Manager
+
+Usage:
+  orchestrator                  Launch Orchestrator desktop app (and start daemon if needed)
+  orchestrator install          Build frontend (+ Tauri if needed) and install CLI & desktop shortcut
+  orchestrator install --tauri  Force rebuild of the native Tauri Rust binary during install
+  orchestrator update           Pull latest git changes, rebuild frontend, and restart daemon
+  orchestrator update --tauri   Pull, rebuild frontend + native Tauri binary, and restart daemon
+  orchestrator restart          Restart the background daemon on ${URL}
+  orchestrator stop             Stop running Orchestrator window and background daemon
+  orchestrator status           Show daemon and installation status
+  orchestrator uninstall        Stop app and remove CLI symlink & desktop shortcut (keeps ~/.config/orchestrator)
+  orchestrator uninstall --purge  Uninstall and also delete ~/.config/orchestrator
+EOF
+}
+
+case "${1:-}" in
+  install)
+    shift
+    cmd_install "$@"
+    ;;
+  update)
+    shift
+    cmd_update "$@"
+    ;;
+  uninstall|remove)
+    shift
+    cmd_uninstall "$@"
+    ;;
+  restart)
+    stop_daemon
+    start_daemon
+    echo "✓ Orchestrator daemon restarted at ${URL}"
+    ;;
+  stop)
+    stop_app
+    echo "✓ Orchestrator stopped."
+    ;;
+  status)
+    cmd_status
+    ;;
+  --daemon-only)
+    start_daemon
+    echo "Orchestrator daemon is running at ${URL}"
+    ;;
+  help|--help|-h)
+    cmd_help
+    ;;
+  start|"")
+    shift 2>/dev/null || true
+    launch_ui "$@"
+    ;;
+  *)
+    launch_ui "$@"
+    ;;
+esac
