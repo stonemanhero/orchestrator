@@ -57,7 +57,7 @@ A native Linux desktop application that discovers and manages all local developm
 Clone the repository and run the built-in installer:
 
 ```bash
-git clone <YOUR_GIT_REPO_URL> ~/Projects/orchestrator
+git clone git@github.com:stonemanhero/orchestrator.git ~/Projects/orchestrator
 cd ~/Projects/orchestrator
 ./orchestrator install
 ```
