@@ -6,7 +6,7 @@ import { handleApiRequest, scanProjects, getChromeProfiles } from "./orchestrato
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.resolve(__dirname, "../dist");
-const PORT = Number(process.env.MMM_PORT || 1420);
+const PORT = Number(process.env.ORCHESTRATOR_PORT || process.env.MMM_PORT || 1420);
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -47,6 +47,6 @@ server.listen(PORT, "127.0.0.1", async () => {
   const projects = await scanProjects();
   const profiles = getChromeProfiles();
   const running = projects.filter((p) => p.isRunning).map((p) => p.name);
-  console.log(`MMM Desktop Server listening on http://127.0.0.1:${PORT}`);
+  console.log(`Orchestrator Server listening on http://127.0.0.1:${PORT}`);
   console.log(`Discovered ${projects.length} projects (${running.length} running: ${running.join(", ") || "none"}) and ${profiles.length} Chrome profiles.`);
 });

@@ -10,22 +10,32 @@ DESKTOP_PATH="${HOME}/.local/share/applications/orchestrator.desktop"
 TAURI_BIN="${APP_DIR}/src-tauri/target/release/orchestrator"
 LOG_FILE="/tmp/orchestrator-daemon.log"
 
-# Dynamically resolve Node.js v22+ (checks PATH first, then ~/.nvm)
+# Dynamically resolve Node.js v18+ across PATH, NVM, FNM, Volta, and ASDF (preferring newest)
 resolve_node() {
-  if command -v node >/dev/null 2>&1; then
-    local ver
-    ver="$(node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1)"
-    if [ -n "$ver" ] && [ "$ver" -ge 22 ] 2>/dev/null; then
-      command -v node
-      return 0
-    fi
-  fi
+  local candidates=()
 
   if [ -d "${HOME}/.nvm/versions/node" ]; then
-    local nvm_node
-    nvm_node="$(find "${HOME}/.nvm/versions/node" -maxdepth 3 -name node -type f 2>/dev/null | sort -V | tail -n 1)"
-    if [ -n "$nvm_node" ] && [ -x "$nvm_node" ]; then
-      echo "$nvm_node"
+    while IFS= read -r b; do
+      [ -n "$b" ] && candidates+=("$b")
+    done < <(find "${HOME}/.nvm/versions/node" -maxdepth 3 -name node -type f 2>/dev/null | sort -V)
+  fi
+
+  for fnm_dir in "${HOME}/.fnm/node-versions" "${HOME}/.local/share/fnm/node-versions"; do
+    if [ -d "$fnm_dir" ]; then
+      while IFS= read -r b; do
+        [ -n "$b" ] && candidates+=("$b")
+      done < <(find "$fnm_dir" -maxdepth 4 -name node -type f 2>/dev/null | sort -V)
+    fi
+  done
+
+  if [ -x "${HOME}/.volta/bin/node" ]; then
+    candidates+=("${HOME}/.volta/bin/node")
+  fi
+
+  if [ "${#candidates[@]}" -gt 0 ]; then
+    local newest="${candidates[${#candidates[@]}-1]}"
+    if [ -x "$newest" ]; then
+      echo "$newest"
       return 0
     fi
   fi
@@ -35,13 +45,23 @@ resolve_node() {
     return 0
   fi
 
-  echo "Error: Node.js v22+ is required but was not found." >&2
+  echo "Error: Node.js (v18+) is required but was not found." >&2
   exit 1
+}
+
+resolve_chrome() {
+  for bin in google-chrome google-chrome-stable chromium chromium-browser /snap/bin/chromium; do
+    if command -v "$bin" >/dev/null 2>&1; then
+      command -v "$bin"
+      return 0
+    fi
+  done
+  echo "google-chrome"
 }
 
 NODE_BIN="$(resolve_node)"
 NODE_DIR="$(dirname "$NODE_BIN")"
-export PATH="${NODE_DIR}:${PATH}"
+export PATH="${NODE_DIR}:${HOME}/.local/bin:/snap/bin:${PATH}"
 
 is_daemon_running() {
   curl -s "${URL}/api/logs" >/dev/null 2>&1
@@ -49,9 +69,11 @@ is_daemon_running() {
 
 start_daemon() {
   if ! is_daemon_running; then
-    # Ensure server bundle is built if prod-server.js doesn't exist
-    if [ ! -f "${APP_DIR}/server/prod-server.js" ] && [ -x "${APP_DIR}/node_modules/.bin/esbuild" ]; then
-      "${APP_DIR}/node_modules/.bin/esbuild" "${APP_DIR}/server/prod-server.ts" --bundle --platform=node --format=esm --packages=external --outfile="${APP_DIR}/server/prod-server.js" >/dev/null 2>&1 || true
+    # Always re-bundle server/prod-server.ts -> server/prod-server.js (~7ms) so server/*.ts edits apply on restart
+    if [ -x "${APP_DIR}/node_modules/.bin/esbuild" ]; then
+      "${APP_DIR}/node_modules/.bin/esbuild" "${APP_DIR}/server/prod-server.ts" \
+        --bundle --platform=node --format=esm --packages=external \
+        --outfile="${APP_DIR}/server/prod-server.js" >/dev/null 2>&1 || true
     fi
 
     if command -v setsid >/dev/null 2>&1; then
@@ -87,7 +109,7 @@ start_daemon() {
 }
 
 stop_daemon() {
-  pkill -f "server/prod-server" 2>/dev/null || true
+  pkill -f "node.*server/prod-server" 2>/dev/null || true
 }
 
 stop_app() {
@@ -105,7 +127,9 @@ launch_ui() {
   if [ -x "${TAURI_BIN}" ]; then
     $launcher "${TAURI_BIN}" "$@" </dev/null >/dev/null 2>&1 &
   else
-    $launcher google-chrome --app="${URL}" --class="Orchestrator" --new-window </dev/null >/dev/null 2>&1 &
+    local chrome_bin
+    chrome_bin="$(resolve_chrome)"
+    $launcher "$chrome_bin" --app="${URL}" --class="Orchestrator" --new-window </dev/null >/dev/null 2>&1 &
   fi
 }
 
@@ -115,7 +139,7 @@ cmd_install() {
 
   mkdir -p "${CONFIG_DIR}"
 
-  echo "==> Installing npm dependencies & building frontend..."
+  echo "==> Installing npm dependencies & building frontend + server bundle..."
   (cd "${APP_DIR}" && npm install && npm run build)
 
   if [ ! -x "${TAURI_BIN}" ] || [ "$1" = "--tauri" ]; then
@@ -139,6 +163,10 @@ cmd_install() {
   mkdir -p "$(dirname "${SYMLINK_PATH}")"
   chmod +x "${APP_DIR}/orchestrator"
   ln -sf "${APP_DIR}/orchestrator" "${SYMLINK_PATH}"
+
+  if [ -f "${HOME}/.bashrc" ] && ! grep -q '\.local/bin' "${HOME}/.bashrc" 2>/dev/null; then
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "${HOME}/.bashrc"
+  fi
 
   echo "==> Creating desktop launcher at ${DESKTOP_PATH}..."
   mkdir -p "$(dirname "${DESKTOP_PATH}")"
@@ -167,7 +195,7 @@ cmd_update() {
     (cd "${APP_DIR}" && git pull)
   fi
 
-  echo "==> Installing npm dependencies & rebuilding frontend..."
+  echo "==> Installing npm dependencies & rebuilding frontend + server bundle..."
   (cd "${APP_DIR}" && npm install && npm run build)
 
   if [ "$1" = "--tauri" ] && command -v cargo >/dev/null 2>&1; then

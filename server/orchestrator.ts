@@ -406,9 +406,16 @@ export function getOpenPhpStormProjectPaths(): Set<string> {
 
 export function getChromeProfiles(): ChromeProfile[] {
   const profiles: ChromeProfile[] = [];
+  const candidateStates = [
+    CHROME_LOCAL_STATE,
+    path.join(os.homedir(), ".config", "google-chrome-beta", "Local State"),
+    path.join(os.homedir(), ".config", "chromium", "Local State"),
+    path.join(os.homedir(), "snap", "chromium", "common", "chromium", "Local State"),
+  ];
   try {
-    if (fs.existsSync(CHROME_LOCAL_STATE)) {
-      const raw = JSON.parse(fs.readFileSync(CHROME_LOCAL_STATE, "utf-8"));
+    const stateFile = candidateStates.find((p) => fs.existsSync(p));
+    if (stateFile) {
+      const raw = JSON.parse(fs.readFileSync(stateFile, "utf-8"));
       const cache = raw?.profile?.info_cache || {};
       for (const [dir, info] of Object.entries<any>(cache)) {
         profiles.push({
@@ -939,10 +946,129 @@ export function stopProjectDocker(projectName: string, projectPath: string): Pro
   });
 }
 
+function findExecutable(names: string[], extraPaths: string[] = []): string | null {
+  for (const fullPath of extraPaths) {
+    try {
+      if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+        fs.accessSync(fullPath, fs.constants.X_OK);
+        return fullPath;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  const pathDirs = [
+    ...(process.env.PATH || "").split(":").filter(Boolean),
+    path.join(os.homedir(), ".local", "bin"),
+    "/snap/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+  ];
+
+  for (const name of names) {
+    for (const dir of pathDirs) {
+      const candidate = path.join(dir, name);
+      try {
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+          fs.accessSync(candidate, fs.constants.X_OK);
+          return candidate;
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+  return null;
+}
+
+function resolvePhpStormBin(): string {
+  const found = findExecutable(
+    ["phpstorm", "phpstorm.sh"],
+    [
+      PHPSTORM_BIN,
+      path.join(os.homedir(), ".local", "share", "JetBrains", "Toolbox", "apps", "phpstorm", "bin", "phpstorm"),
+      path.join(os.homedir(), ".local", "share", "JetBrains", "Toolbox", "apps", "phpstorm", "bin", "phpstorm.sh"),
+      "/snap/bin/phpstorm",
+      path.join(os.homedir(), ".local", "bin", "phpstorm"),
+      "/usr/local/bin/phpstorm",
+      "/opt/phpstorm/bin/phpstorm",
+      "/opt/phpstorm/bin/phpstorm.sh",
+    ]
+  );
+  return found || "phpstorm";
+}
+
+function resolveChromeBin(): string {
+  const found = findExecutable([
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+  ]);
+  return found || "google-chrome";
+}
+
+function spawnTerminalWindow(
+  workDir: string,
+  bashCommand?: string,
+  extraEnv?: NodeJS.ProcessEnv
+) {
+  const safeWorkDir = fs.existsSync(workDir) ? workDir : os.homedir();
+  const spawnOpts = {
+    cwd: safeWorkDir,
+    detached: true,
+    stdio: "ignore" as const,
+    env: extraEnv ? { ...process.env, ...extraEnv } : { ...process.env },
+  };
+
+  const termBin =
+    findExecutable([
+      "gnome-terminal",
+      "ptyxis",
+      "kgx",
+      "xfce4-terminal",
+      "konsole",
+      "tilix",
+      "mate-terminal",
+      "x-terminal-emulator",
+    ]) || "gnome-terminal";
+  const termName = path.basename(termBin);
+
+  let args: string[] = [];
+  if (termName === "gnome-terminal") {
+    args = bashCommand
+      ? ["--working-directory", safeWorkDir, "--", "bash", "-c", bashCommand]
+      : ["--working-directory", safeWorkDir];
+  } else if (termName === "ptyxis") {
+    args = bashCommand
+      ? [`--working-directory=${safeWorkDir}`, "--", "bash", "-c", bashCommand]
+      : [`--working-directory=${safeWorkDir}`];
+  } else if (termName === "konsole") {
+    args = bashCommand
+      ? ["--workdir", safeWorkDir, "-e", "bash", "-c", bashCommand]
+      : ["--workdir", safeWorkDir];
+  } else if (
+    termName === "xfce4-terminal" ||
+    termName === "mate-terminal" ||
+    termName === "tilix" ||
+    termName === "kgx"
+  ) {
+    args = bashCommand
+      ? [`--working-directory=${safeWorkDir}`, "-e", `bash -c ${JSON.stringify(bashCommand)}`]
+      : [`--working-directory=${safeWorkDir}`];
+  } else {
+    args = bashCommand ? ["-e", "bash", "-c", bashCommand] : [];
+  }
+
+  const child = spawn(termBin, args, spawnOpts);
+  child.unref();
+}
+
 export function openInPhpStorm(projectName: string, projectPath: string) {
   markPhpStormLaunching(projectPath);
   state.addLog(projectName, "phpstorm", `Launching PhpStorm for ${projectPath}`, "system");
-  const bin = fs.existsSync(PHPSTORM_BIN) ? PHPSTORM_BIN : "phpstorm";
+  const bin = resolvePhpStormBin();
   const child = spawn(bin, [projectPath], {
     cwd: projectPath,
     detached: true,
@@ -966,25 +1092,12 @@ export function openInTerminal(projectName: string, projectPath: string, contain
 
   if (containerService) {
     const cdCmd = relDir && relDir !== "." ? `cd "${relDir}" 2>/dev/null || true; ` : "";
-    const child = spawn(
-      "gnome-terminal",
-      [
-        "--working-directory",
-        projectPath,
-        "--",
-        "bash",
-        "-c",
-        `docker compose exec ${containerService} bash -c '${cdCmd}exec bash' || docker compose exec ${containerService} sh; exec bash`,
-      ],
-      { detached: true, stdio: "ignore" }
+    spawnTerminalWindow(
+      projectPath,
+      `docker compose exec ${containerService} bash -c '${cdCmd}exec bash' || docker compose exec ${containerService} sh; exec bash`
     );
-    child.unref();
   } else {
-    const child = spawn("gnome-terminal", ["--working-directory", targetHostDir], {
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
+    spawnTerminalWindow(targetHostDir);
   }
 }
 
@@ -1019,27 +1132,14 @@ export function openSshSession(
     "system"
   );
 
-  const child = spawn(
-    "gnome-terminal",
-    [
-      "--working-directory",
-      fs.existsSync(projectPath) ? projectPath : os.homedir(),
-      "--",
-      "bash",
-      "-c",
-      `python3 "${helperScript}"; echo ""; echo "SSH session ended."; exec bash`,
-    ],
+  spawnTerminalWindow(
+    fs.existsSync(projectPath) ? projectPath : os.homedir(),
+    `python3 "${helperScript}"; echo ""; echo "SSH session ended."; exec bash`,
     {
-      detached: true,
-      stdio: "ignore",
-      env: {
-        ...process.env,
-        ORCHESTRATOR_SSH_CMD: cmd,
-        ORCHESTRATOR_SSH_PASS: ssh.password || "",
-      },
+      ORCHESTRATOR_SSH_CMD: cmd,
+      ORCHESTRATOR_SSH_PASS: ssh.password || "",
     }
   );
-  child.unref();
 }
 
 export function testSshConnection(
@@ -1097,13 +1197,14 @@ export function testSshConnection(
 export function openInChrome(projectName: string, profileDir: string, urls: string[]) {
   const targetUrls = urls.filter((u) => u && u.trim().length > 0);
   const args = [`--profile-directory=${profileDir || "Default"}`, ...targetUrls];
+  const chromeBin = resolveChromeBin();
   state.addLog(
     projectName,
     "chrome",
     `Launching Chrome (${profileDir || "Default"}) -> ${targetUrls.join(", ") || "new window"}`,
     "system"
   );
-  const child = spawn("google-chrome", args, {
+  const child = spawn(chromeBin, args, {
     detached: true,
     stdio: "ignore",
   });
