@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 const execFileAsync = promisify(execFile);
@@ -987,6 +988,22 @@ export function openInTerminal(projectName: string, projectPath: string, contain
   }
 }
 
+function getSshHelperScript(): string {
+  const baseDir =
+    typeof import.meta.dirname === "string"
+      ? import.meta.dirname
+      : path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.resolve(baseDir, "ssh-helper.py"),
+    path.resolve(baseDir, "server/ssh-helper.py"),
+    path.resolve(baseDir, "../server/ssh-helper.py"),
+  ];
+  return (
+    candidates.find((p) => fs.existsSync(p)) ||
+    path.resolve(baseDir, "ssh-helper.py")
+  );
+}
+
 export function openSshSession(
   projectName: string,
   projectPath: string,
@@ -994,7 +1011,7 @@ export function openSshSession(
 ) {
   const cmd = (ssh.command || "").trim();
   if (!cmd) return;
-  const helperScript = path.resolve(import.meta.dirname, "ssh-helper.py");
+  const helperScript = getSshHelperScript();
   state.addLog(
     projectName,
     "ssh",
@@ -1037,7 +1054,7 @@ export function testSshConnection(
       return;
     }
 
-    const helperScript = path.resolve(import.meta.dirname, "ssh-helper.py");
+    const helperScript = getSshHelperScript();
     state.addLog(
       projectName,
       "ssh-test",

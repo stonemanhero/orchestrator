@@ -46,7 +46,7 @@ A native Linux desktop application that discovers and manages all local developm
   ```bash
   sudo apt update
   sudo apt install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev pkg-config
   ```
   *(If Rust/Cargo is not installed, `orchestrator` will automatically fall back to launching a standalone Chrome app window.)*
 

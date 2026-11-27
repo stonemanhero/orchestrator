@@ -49,18 +49,45 @@ is_daemon_running() {
 
 start_daemon() {
   if ! is_daemon_running; then
-    nohup "$NODE_BIN" --experimental-strip-types "${APP_DIR}/server/prod-server.ts" </dev/null >"${LOG_FILE}" 2>&1 &
+    # Ensure server bundle is built if prod-server.js doesn't exist
+    if [ ! -f "${APP_DIR}/server/prod-server.js" ] && [ -x "${APP_DIR}/node_modules/.bin/esbuild" ]; then
+      "${APP_DIR}/node_modules/.bin/esbuild" "${APP_DIR}/server/prod-server.ts" --bundle --platform=node --format=esm --packages=external --outfile="${APP_DIR}/server/prod-server.js" >/dev/null 2>&1 || true
+    fi
+
+    if command -v setsid >/dev/null 2>&1; then
+      if [ -f "${APP_DIR}/server/prod-server.js" ]; then
+        setsid "$NODE_BIN" "${APP_DIR}/server/prod-server.js" </dev/null >"${LOG_FILE}" 2>&1 &
+      else
+        setsid "$NODE_BIN" --experimental-strip-types "${APP_DIR}/server/prod-server.ts" </dev/null >"${LOG_FILE}" 2>&1 &
+      fi
+    else
+      if [ -f "${APP_DIR}/server/prod-server.js" ]; then
+        nohup "$NODE_BIN" "${APP_DIR}/server/prod-server.js" </dev/null >"${LOG_FILE}" 2>&1 &
+        disown $! 2>/dev/null || true
+      else
+        nohup "$NODE_BIN" --experimental-strip-types "${APP_DIR}/server/prod-server.ts" </dev/null >"${LOG_FILE}" 2>&1 &
+        disown $! 2>/dev/null || true
+      fi
+    fi
+
     for _ in {1..30}; do
       if is_daemon_running; then
         break
       fi
       sleep 0.1
     done
+
+    if ! is_daemon_running; then
+      echo "Warning: Orchestrator daemon failed to start. Check ${LOG_FILE} for details." >&2
+      if [ -f "${LOG_FILE}" ]; then
+        tail -n 10 "${LOG_FILE}" >&2
+      fi
+    fi
   fi
 }
 
 stop_daemon() {
-  pkill -f "server/prod-server.ts" 2>/dev/null || true
+  pkill -f "server/prod-server" 2>/dev/null || true
 }
 
 stop_app() {
@@ -70,10 +97,15 @@ stop_app() {
 
 launch_ui() {
   start_daemon
+  local launcher="nohup"
+  if command -v setsid >/dev/null 2>&1; then
+    launcher="setsid"
+  fi
+
   if [ -x "${TAURI_BIN}" ]; then
-    nohup "${TAURI_BIN}" "$@" </dev/null >/dev/null 2>&1 &
+    $launcher "${TAURI_BIN}" "$@" </dev/null >/dev/null 2>&1 &
   else
-    nohup google-chrome --app="${URL}" --class="Orchestrator" --new-window </dev/null >/dev/null 2>&1 &
+    $launcher google-chrome --app="${URL}" --class="Orchestrator" --new-window </dev/null >/dev/null 2>&1 &
   fi
 }
 
@@ -87,9 +119,17 @@ cmd_install() {
   (cd "${APP_DIR}" && npm install && npm run build)
 
   if [ ! -x "${TAURI_BIN}" ] || [ "$1" = "--tauri" ]; then
-    if command -v cargo >/dev/null 2>&1; then
+    if [ "$1" = "--tauri" ]; then
       echo "==> Building native Tauri desktop binary (cargo build --release)..."
       (cd "${APP_DIR}/src-tauri" && cargo build --release) || echo "    Warning: Tauri build failed; will use Chrome app window fallback."
+    elif command -v cargo >/dev/null 2>&1; then
+      if command -v pkg-config >/dev/null 2>&1 && ! pkg-config --exists dbus-1 2>/dev/null; then
+        echo "==> Tauri system dependencies (libdbus-1-dev, etc.) not detected."
+        echo "    Using Chrome app window fallback. (To build native Tauri binary, install dependencies and run: orchestrator install --tauri)"
+      else
+        echo "==> Building native Tauri desktop binary (cargo build --release)..."
+        (cd "${APP_DIR}/src-tauri" && cargo build --release) || echo "    Warning: Tauri build failed; will use Chrome app window fallback."
+      fi
     else
       echo "==> Rust/Cargo not found; skipping native Tauri binary build (will use Chrome app window fallback)."
     fi
