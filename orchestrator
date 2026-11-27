@@ -78,16 +78,16 @@ start_daemon() {
 
     if command -v setsid >/dev/null 2>&1; then
       if [ -f "${APP_DIR}/server/prod-server.js" ]; then
-        setsid "$NODE_BIN" "${APP_DIR}/server/prod-server.js" </dev/null >"${LOG_FILE}" 2>&1 &
+        setsid "$NODE_BIN" --max-old-space-size=64 "${APP_DIR}/server/prod-server.js" </dev/null >"${LOG_FILE}" 2>&1 &
       else
-        setsid "$NODE_BIN" --experimental-strip-types "${APP_DIR}/server/prod-server.ts" </dev/null >"${LOG_FILE}" 2>&1 &
+        setsid "$NODE_BIN" --max-old-space-size=64 --experimental-strip-types "${APP_DIR}/server/prod-server.ts" </dev/null >"${LOG_FILE}" 2>&1 &
       fi
     else
       if [ -f "${APP_DIR}/server/prod-server.js" ]; then
-        nohup "$NODE_BIN" "${APP_DIR}/server/prod-server.js" </dev/null >"${LOG_FILE}" 2>&1 &
+        nohup "$NODE_BIN" --max-old-space-size=64 "${APP_DIR}/server/prod-server.js" </dev/null >"${LOG_FILE}" 2>&1 &
         disown $! 2>/dev/null || true
       else
-        nohup "$NODE_BIN" --experimental-strip-types "${APP_DIR}/server/prod-server.ts" </dev/null >"${LOG_FILE}" 2>&1 &
+        nohup "$NODE_BIN" --max-old-space-size=64 --experimental-strip-types "${APP_DIR}/server/prod-server.ts" </dev/null >"${LOG_FILE}" 2>&1 &
         disown $! 2>/dev/null || true
       fi
     fi
@@ -125,7 +125,7 @@ launch_ui() {
   fi
 
   if [ -x "${TAURI_BIN}" ]; then
-    $launcher "${TAURI_BIN}" "$@" </dev/null >/dev/null 2>&1 &
+    WEBKIT_DISABLE_DMABUF_RENDERER=1 $launcher "${TAURI_BIN}" "$@" </dev/null >/dev/null 2>&1 &
   else
     local chrome_bin
     chrome_bin="$(resolve_chrome)"

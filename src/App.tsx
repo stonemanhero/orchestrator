@@ -250,12 +250,14 @@ export default function App() {
   const [sshTestStatus, setSshTestStatus] = useState<
     Record<string, { testing: boolean; ok?: boolean; message?: string }>
   >({});
+  const [sshDropdownOpen, setSshDropdownOpen] = useState(false);
+  const sshDropdownRef = useRef<HTMLDivElement>(null);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  const fetchBootstrap = async () => {
+  const fetchBootstrap = async (force = false) => {
     try {
-      const res = await fetch(`${API_BASE}/api/bootstrap`);
+      const res = await fetch(`${API_BASE}/api/bootstrap${force ? "?force=1" : ""}`);
       const data = await res.json();
       if (data.settings?.projectsRoot) {
         setProjectsRoot(data.settings.projectsRoot);
@@ -270,36 +272,73 @@ export default function App() {
     }
   };
 
+  const fetchLogsOnly = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/logs`);
+      const data = await res.json();
+      setLogs(data.logs || []);
+      setProcesses(data.processes || []);
+    } catch {
+      // ignore
+    }
+  };
+
   useEffect(() => {
     fetchBootstrap();
     searchInputRef.current?.focus();
 
-    const logPoll = setInterval(async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/logs`);
-        const data = await res.json();
-        setLogs(data.logs || []);
-        setProcesses(data.processes || []);
-      } catch {
-        // ignore
+    // Refresh immediately whenever the user switches back to the Orchestrator window
+    const handleFocus = () => {
+      if (document.visibilityState === "visible") {
+        fetchBootstrap(false);
       }
-    }, 1500);
+    };
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleFocus);
 
-    const projPoll = setInterval(async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/bootstrap`);
-        const data = await res.json();
-        if (data.projects) setProjects(data.projects);
-      } catch {
-        // ignore
+    // Lightweight background sync only while window is visible (15s instead of 4s)
+    const projPoll = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        fetchBootstrap(false);
       }
-    }, 4000);
+    }, 15000);
 
     return () => {
-      clearInterval(logPoll);
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleFocus);
       clearInterval(projPoll);
     };
   }, []);
+
+  const hasRunningProcesses = useMemo(
+    () => processes.some((p) => p.running),
+    [processes]
+  );
+
+  // Only poll /api/logs (every 1.5s) while a task/Docker command is actively running or the log drawer is open
+  useEffect(() => {
+    if (!showLogsDrawer && !hasRunningProcesses && !busyProject && !stoppingAll) {
+      return;
+    }
+    fetchLogsOnly();
+    const logPoll = setInterval(fetchLogsOnly, 1500);
+    return () => clearInterval(logPoll);
+  }, [showLogsDrawer, hasRunningProcesses, busyProject, stoppingAll]);
+
+  useEffect(() => {
+    setSshDropdownOpen(false);
+  }, [selectedName]);
+
+  useEffect(() => {
+    if (!sshDropdownOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (sshDropdownRef.current && !sshDropdownRef.current.contains(e.target as Node)) {
+        setSshDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [sshDropdownOpen]);
 
   const handleSaveProjectsRoot = async () => {
     setRootError(null);
@@ -875,7 +914,7 @@ export default function App() {
             </button>
 
             <button
-              onClick={fetchBootstrap}
+              onClick={() => fetchBootstrap(true)}
               disabled={isAnyBusy}
               title="Refresh projects, PhpStorm windows & Docker status"
               className="h-8 w-8 flex items-center justify-center rounded-md bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-[#8b949e] hover:text-[#e6edf3] transition cursor-pointer"
@@ -1177,167 +1216,221 @@ export default function App() {
           <div className="flex-1 overflow-y-auto p-4 sm:p-6">
             <div className="w-full space-y-5">
               {/* Project Status & Action Header Card */}
-              <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2.5">
-                    <h1 className="text-lg sm:text-xl font-bold text-white truncate">
-                      {selectedProject.name}
-                    </h1>
-                    {selectedProject.isRunning ? (
-                      <span className="px-2.5 py-0.5 rounded text-xs font-semibold bg-[#238636]/20 text-[#3fb950] border border-[#238636]">
-                        ACTIVE ({selectedProject.runningContainers.length} containers running)
-                      </span>
-                    ) : selectedProject.hasDockerCompose ? (
-                      <span className="px-2.5 py-0.5 rounded text-xs bg-[#21262d] text-[#8b949e] border border-[#30363d]">
-                        Docker Stopped
-                      </span>
-                    ) : (
-                      <span className="px-2.5 py-0.5 rounded text-xs bg-[#21262d] text-[#8b949e] border border-[#30363d]">
-                        No Docker Compose
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-[#8b949e] font-mono mt-1 break-all">
-                    {selectedProject.path}
-                  </p>
-                  {selectedProject.gitRemote && (
-                    <p className="text-xs text-[#8b949e] font-mono mt-1 flex items-center gap-1.5 break-all">
-                      <GitBranch className="w-3.5 h-3.5 text-[#3fb950] shrink-0" />
-                      <span>{selectedProject.gitRemote}</span>
-                    </p>
-                  )}
-                  <p className="text-xs text-[#3fb950] mt-1.5">
-                    <strong>On Activate:</strong> {getSwitchSummary(selectedProject)}
-                  </p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 shrink-0">
-                  {selectedProject.isRunning ? (
-                    <>
-                      <button
-                        onClick={() => handleRequestStopDocker(selectedProject)}
-                        disabled={isAnyBusy}
-                        className={`h-8 whitespace-nowrap shrink-0 flex items-center gap-1.5 px-3.5 rounded-md text-xs font-medium transition cursor-pointer ${BTN_RED}`}
-                      >
-                        <Square className="w-3.5 h-3.5 shrink-0" />
-                        <span>
-                          {busyProject === selectedProject.name
-                            ? "Stopping..."
-                            : "Stop"}
+              <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4 sm:p-5 flex flex-col gap-4">
+                <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <h1 className="text-lg sm:text-xl font-bold text-white truncate">
+                        {selectedProject.name}
+                      </h1>
+                      {selectedProject.isRunning ? (
+                        <span className="px-2.5 py-0.5 rounded text-xs font-semibold bg-[#238636]/20 text-[#3fb950] border border-[#238636] shrink-0">
+                          ACTIVE ({selectedProject.runningContainers.length} containers running)
                         </span>
-                      </button>
+                      ) : selectedProject.hasDockerCompose ? (
+                        <span className="px-2.5 py-0.5 rounded text-xs bg-[#21262d] text-[#8b949e] border border-[#30363d] shrink-0">
+                          Docker Stopped
+                        </span>
+                      ) : (
+                        <span className="px-2.5 py-0.5 rounded text-xs bg-[#21262d] text-[#8b949e] border border-[#30363d] shrink-0">
+                          No Docker Compose
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-[#8b949e] font-mono mt-1 break-all">
+                      {selectedProject.path}
+                    </p>
+                    {selectedProject.gitRemote && (
+                      <p className="text-xs text-[#8b949e] font-mono mt-1 flex items-center gap-1.5 break-all">
+                        <GitBranch className="w-3.5 h-3.5 text-[#3fb950] shrink-0" />
+                        <span>{selectedProject.gitRemote}</span>
+                      </p>
+                    )}
+                    <p className="text-xs text-[#3fb950] mt-1.5">
+                      <strong>On Activate:</strong> {getSwitchSummary(selectedProject)}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    {selectedProject.isRunning ? (
+                      <>
+                        <button
+                          onClick={() => handleRequestStopDocker(selectedProject)}
+                          disabled={isAnyBusy}
+                          className={`h-8 whitespace-nowrap shrink-0 flex items-center gap-1.5 px-3.5 rounded-md text-xs font-medium transition cursor-pointer ${BTN_RED}`}
+                        >
+                          <Square className="w-3.5 h-3.5 shrink-0" />
+                          <span>
+                            {busyProject === selectedProject.name
+                              ? "Stopping..."
+                              : "Stop"}
+                          </span>
+                        </button>
+                        <button
+                          onClick={() => handleSwitchProject(selectedProject.name)}
+                          disabled={isAnyBusy}
+                          title="Re-open PhpStorm (if not open), Chrome URLs, and run startup commands"
+                          className={`h-8 whitespace-nowrap shrink-0 flex items-center gap-1.5 px-3.5 rounded-md text-xs font-medium transition cursor-pointer ${BTN_GREEN}`}
+                        >
+                          <Play className="w-3.5 h-3.5 shrink-0" />
+                          <span>Launch IDE & Browser</span>
+                        </button>
+                      </>
+                    ) : (
                       <button
                         onClick={() => handleSwitchProject(selectedProject.name)}
                         disabled={isAnyBusy}
-                        title="Re-open PhpStorm (if not open), Chrome URLs, and run startup commands"
-                        className={`h-8 whitespace-nowrap shrink-0 flex items-center gap-1.5 px-3.5 rounded-md text-xs font-medium transition cursor-pointer ${BTN_GREEN}`}
+                        className={`h-8 whitespace-nowrap shrink-0 flex items-center gap-1.5 px-4 rounded-md text-xs font-semibold transition cursor-pointer ${BTN_GREEN}`}
                       >
                         <Play className="w-3.5 h-3.5 shrink-0" />
-                        <span>Launch IDE & Browser</span>
+                        <span>
+                          {busyProject === selectedProject.name
+                            ? "Activating..."
+                            : "Activate"}
+                        </span>
                       </button>
-                    </>
-                  ) : (
+                    )}
+
                     <button
-                      onClick={() => handleSwitchProject(selectedProject.name)}
-                      disabled={isAnyBusy}
-                      className={`h-8 whitespace-nowrap shrink-0 flex items-center gap-1.5 px-4 rounded-md text-xs font-semibold transition cursor-pointer ${BTN_GREEN}`}
+                      onClick={() => handleOpenPhpStorm(selectedProject.name)}
+                      disabled={selectedProject.isPhpStormOpen || isAnyBusy}
+                      title={
+                        selectedProject.isPhpStormOpen
+                          ? "Already open in PhpStorm"
+                          : "Open in PhpStorm"
+                      }
+                      className={`h-8 whitespace-nowrap shrink-0 flex items-center gap-1.5 px-3 rounded-md border text-xs font-medium transition ${
+                        selectedProject.isPhpStormOpen
+                          ? "bg-[#161b22] border-[#21262d] text-[#484f58] cursor-not-allowed"
+                          : "bg-[#21262d] hover:bg-[#30363d] border-[#30363d] text-[#e6edf3] cursor-pointer"
+                      }`}
                     >
-                      <Play className="w-3.5 h-3.5 shrink-0" />
+                      <Code2 className="w-3.5 h-3.5 shrink-0" />
                       <span>
-                        {busyProject === selectedProject.name
-                          ? "Activating..."
-                          : "Activate"}
+                        {selectedProject.isPhpStormOpen ? "IDE Open" : "PhpStorm"}
                       </span>
                     </button>
-                  )}
 
-                  <button
-                    onClick={() => handleOpenPhpStorm(selectedProject.name)}
-                    disabled={selectedProject.isPhpStormOpen || isAnyBusy}
-                    title={
-                      selectedProject.isPhpStormOpen
-                        ? "Already open in PhpStorm"
-                        : "Open in PhpStorm"
-                    }
-                    className={`h-8 whitespace-nowrap shrink-0 flex items-center gap-1.5 px-3 rounded-md border text-xs font-medium transition ${
-                      selectedProject.isPhpStormOpen
-                        ? "bg-[#161b22] border-[#21262d] text-[#484f58] cursor-not-allowed"
-                        : "bg-[#21262d] hover:bg-[#30363d] border-[#30363d] text-[#e6edf3] cursor-pointer"
-                    }`}
-                  >
-                    <Code2 className="w-3.5 h-3.5 shrink-0" />
-                    <span>
-                      {selectedProject.isPhpStormOpen ? "IDE Open" : "PhpStorm"}
-                    </span>
-                  </button>
-
-                  <button
-                    onClick={() => handleOpenTerminal(selectedProject.name)}
-                    disabled={isAnyBusy}
-                    className="h-8 whitespace-nowrap shrink-0 flex items-center gap-1.5 px-3 rounded-md bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-[#e6edf3] text-xs font-medium transition cursor-pointer"
-                  >
-                    <Terminal className="w-3.5 h-3.5 shrink-0" />
-                    <span>Host Terminal</span>
-                  </button>
-
-                  <button
-                    onClick={() => handleOpenNotesModal(selectedProject)}
-                    disabled={isAnyBusy}
-                    title={
-                      selectedProject.config.notes?.trim()
-                        ? `Notes: ${selectedProject.config.notes}`
-                        : "Add or view project notes"
-                    }
-                    className="h-8 whitespace-nowrap shrink-0 flex items-center gap-1.5 px-3 rounded-md bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-[#e6edf3] text-xs font-medium transition cursor-pointer"
-                  >
-                    <StickyNote
-                      className={`w-3.5 h-3.5 shrink-0 ${
-                        selectedProject.config.notes?.trim()
-                          ? "text-[#3fb950]"
-                          : "text-[#8b949e]"
-                      }`}
-                    />
-                    <span>Notes</span>
-                  </button>
-
-                  {(selectedProject.config.sshSessions || []).map((ssh, idx) => (
                     <button
-                      key={ssh.id}
-                      onClick={() => handleOpenSsh(selectedProject.name, ssh)}
+                      onClick={() => handleOpenTerminal(selectedProject.name)}
                       disabled={isAnyBusy}
-                      title={`Launch SSH: ${ssh.command}`}
                       className="h-8 whitespace-nowrap shrink-0 flex items-center gap-1.5 px-3 rounded-md bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-[#e6edf3] text-xs font-medium transition cursor-pointer"
                     >
-                      <KeyRound className="w-3.5 h-3.5 shrink-0 text-[#3fb950]" />
-                      <span>
-                        {(selectedProject.config.sshSessions || []).length > 1 &&
-                        ssh.label
-                          ? `SSH Access (${ssh.label})`
-                          : idx === 0
-                          ? "SSH Access"
-                          : `SSH Access #${idx + 1}`}
-                      </span>
+                      <Terminal className="w-3.5 h-3.5 shrink-0" />
+                      <span>Host Terminal</span>
                     </button>
-                  ))}
 
-                  {(selectedProject.config.sshSessions || []).length === 0 &&
-                    newSshCommand.trim().length > 0 && (
+                    <button
+                      onClick={() => handleOpenNotesModal(selectedProject)}
+                      disabled={isAnyBusy}
+                      title={
+                        selectedProject.config.notes?.trim()
+                          ? `Notes: ${selectedProject.config.notes}`
+                          : "Add or view project notes"
+                      }
+                      className="h-8 whitespace-nowrap shrink-0 flex items-center gap-1.5 px-3 rounded-md bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-[#e6edf3] text-xs font-medium transition cursor-pointer"
+                    >
+                      <StickyNote
+                        className={`w-3.5 h-3.5 shrink-0 ${
+                          selectedProject.config.notes?.trim()
+                            ? "text-[#3fb950]"
+                            : "text-[#8b949e]"
+                        }`}
+                      />
+                      <span>Notes</span>
+                    </button>
+
+                    {/* SSH Access: Single button if 1 session, Dropdown menu if 2+ sessions */}
+                    {(selectedProject.config.sshSessions || []).length === 1 && (
                       <button
                         onClick={() =>
-                          handleOpenSsh(selectedProject.name, {
-                            label: newSshLabel.trim() || undefined,
-                            command: newSshCommand.trim(),
-                            password: newSshPassword,
-                          })
+                          handleOpenSsh(
+                            selectedProject.name,
+                            selectedProject.config.sshSessions![0]
+                          )
                         }
                         disabled={isAnyBusy}
-                        title={`Launch SSH: ${newSshCommand.trim()}`}
+                        title={`Launch SSH: ${selectedProject.config.sshSessions![0].command}`}
                         className="h-8 whitespace-nowrap shrink-0 flex items-center gap-1.5 px-3 rounded-md bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-[#e6edf3] text-xs font-medium transition cursor-pointer"
                       >
                         <KeyRound className="w-3.5 h-3.5 shrink-0 text-[#3fb950]" />
-                        <span>SSH Access</span>
+                        <span>
+                          {selectedProject.config.sshSessions![0].label
+                            ? `SSH (${selectedProject.config.sshSessions![0].label})`
+                            : "SSH Access"}
+                        </span>
                       </button>
                     )}
+
+                    {(selectedProject.config.sshSessions || []).length > 1 && (
+                      <div ref={sshDropdownRef} className="relative shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setSshDropdownOpen((prev) => !prev)}
+                          disabled={isAnyBusy}
+                          title="Choose an SSH session to launch"
+                          className="h-8 whitespace-nowrap flex items-center gap-1.5 px-3 rounded-md bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-[#e6edf3] text-xs font-medium transition cursor-pointer"
+                        >
+                          <KeyRound className="w-3.5 h-3.5 shrink-0 text-[#3fb950]" />
+                          <span>
+                            SSH Access ({(selectedProject.config.sshSessions || []).length})
+                          </span>
+                          <ChevronDown
+                            className={`w-3.5 h-3.5 text-[#8b949e] transition-transform ${
+                              sshDropdownOpen ? "rotate-180" : ""
+                            }`}
+                          />
+                        </button>
+
+                        {sshDropdownOpen && (
+                          <div className="absolute right-0 top-full mt-1.5 z-40 w-64 rounded-md bg-[#161b22] border border-[#30363d] shadow-2xl py-1 divide-y divide-[#21262d]">
+                            {(selectedProject.config.sshSessions || []).map(
+                              (ssh, idx) => (
+                                <button
+                                  key={ssh.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setSshDropdownOpen(false);
+                                    handleOpenSsh(selectedProject.name, ssh);
+                                  }}
+                                  className="w-full px-3 py-2 text-left hover:bg-[#21262d] transition flex items-start gap-2.5 cursor-pointer"
+                                >
+                                  <KeyRound className="w-3.5 h-3.5 text-[#3fb950] shrink-0 mt-0.5" />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="text-xs font-semibold text-[#e6edf3] truncate">
+                                      {ssh.label || `SSH Session #${idx + 1}`}
+                                    </div>
+                                    <div className="text-[11px] text-[#8b949e] font-mono truncate">
+                                      {ssh.command}
+                                    </div>
+                                  </div>
+                                </button>
+                              )
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {(selectedProject.config.sshSessions || []).length === 0 &&
+                      newSshCommand.trim().length > 0 && (
+                        <button
+                          onClick={() =>
+                            handleOpenSsh(selectedProject.name, {
+                              label: newSshLabel.trim() || undefined,
+                              command: newSshCommand.trim(),
+                              password: newSshPassword,
+                            })
+                          }
+                          disabled={isAnyBusy}
+                          title={`Launch SSH: ${newSshCommand.trim()}`}
+                          className="h-8 whitespace-nowrap shrink-0 flex items-center gap-1.5 px-3 rounded-md bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-[#e6edf3] text-xs font-medium transition cursor-pointer"
+                        >
+                          <KeyRound className="w-3.5 h-3.5 shrink-0 text-[#3fb950]" />
+                          <span>SSH Access</span>
+                        </button>
+                      )}
+                  </div>
                 </div>
               </div>
 

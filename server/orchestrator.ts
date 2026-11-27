@@ -221,15 +221,23 @@ export function markPhpStormLaunching(projectPath: string) {
   recentPhpStormLaunches.set(path.resolve(projectPath), Date.now());
 }
 
+let cachedIdeaLogState: {
+  logPath: string;
+  mtimeMs: number;
+  size: number;
+  xmlMtimeMs: number;
+  openPaths: string[];
+} | null = null;
+
 /**
  * Detects which project paths are currently open in PhpStorm on Linux:
  * 1. Verifies the main PhpStorm IDE process is actually running (ignoring stale stdioMcpServer / helper processes).
  * 2. Reads ~/.config/JetBrains/PhpStorm<version>/options/recentProjects.xml for entries with opened="true".
- * 3. Replays live project open/close events from ~/.cache/JetBrains/PhpStorm<version>/log/idea.log
- *    because PhpStorm does not always flush recentProjects.xml to disk immediately when a second project window is opened.
+ * 3. Replays live project open/close events from the tail of ~/.cache/JetBrains/PhpStorm<version>/log/idea.log
+ *    (cached by file mtime & size so we never re-parse a 5+ MB log file unless it changed).
  */
 export function getOpenPhpStormProjectPaths(): Set<string> {
-  const openPaths = new Set<string>();
+  const cliOpenPaths = new Set<string>();
   const mainPhpStormPids = new Set<string>();
 
   try {
@@ -252,11 +260,10 @@ export function getOpenPhpStormProjectPaths(): Set<string> {
           !fullCmd.includes("fsnotifier")
         ) {
           mainPhpStormPids.add(entry.name);
-          // If a project path was passed directly as a CLI argument to phpstorm
           for (let i = 1; i < args.length; i++) {
             const arg = args[i];
             if (!arg.startsWith("-") && arg.startsWith("/")) {
-              openPaths.add(path.resolve(arg));
+              cliOpenPaths.add(path.resolve(arg));
             }
           }
         }
@@ -271,12 +278,14 @@ export function getOpenPhpStormProjectPaths(): Set<string> {
   // If the main PhpStorm IDE is not running at all, no projects are open
   if (mainPhpStormPids.size === 0) {
     recentPhpStormLaunches.clear();
+    cachedIdeaLogState = null;
     return new Set<string>();
   }
 
   let latestDir: string | undefined;
+  let xmlPath = "";
+  let xmlMtimeMs = 0;
 
-  // 1. Parse recentProjects.xml from the latest PhpStorm config folder for opened="true"
   try {
     const jbBase = path.join(os.homedir(), ".config", "JetBrains");
     if (fs.existsSync(jbBase)) {
@@ -287,20 +296,9 @@ export function getOpenPhpStormProjectPaths(): Set<string> {
         .reverse();
       latestDir = dirs[0];
       if (latestDir) {
-        const xmlPath = path.join(jbBase, latestDir, "options", "recentProjects.xml");
+        xmlPath = path.join(jbBase, latestDir, "options", "recentProjects.xml");
         if (fs.existsSync(xmlPath)) {
-          const xml = fs.readFileSync(xmlPath, "utf-8");
-          const entryRegex =
-            /<entry\s+key="([^"]+)">[\s\S]*?<RecentProjectMetaInfo([^>]*)>/g;
-          let match;
-          while ((match = entryRegex.exec(xml)) !== null) {
-            const rawKey = match[1];
-            const attrs = match[2];
-            if (attrs.includes('opened="true"')) {
-              const resolved = rawKey.replace("$USER_HOME$", os.homedir());
-              openPaths.add(path.resolve(resolved));
-            }
-          }
+          xmlMtimeMs = fs.statSync(xmlPath).mtimeMs;
         }
       }
     }
@@ -308,7 +306,10 @@ export function getOpenPhpStormProjectPaths(): Set<string> {
     // ignore
   }
 
-  // 2. Parse live idea.log events (PhpStorm logs project open/close immediately even before XML flush)
+  let logPath = "";
+  let logMtimeMs = 0;
+  let logSize = 0;
+
   try {
     const cacheBase = path.join(os.homedir(), ".cache", "JetBrains");
     const cacheDir =
@@ -323,9 +324,66 @@ export function getOpenPhpStormProjectPaths(): Set<string> {
         : undefined;
 
     if (cacheDir) {
-      const logPath = path.join(cacheBase, cacheDir, "log", "idea.log");
+      logPath = path.join(cacheBase, cacheDir, "log", "idea.log");
       if (fs.existsSync(logPath)) {
-        const logContent = fs.readFileSync(logPath, "utf-8");
+        const st = fs.statSync(logPath);
+        logMtimeMs = st.mtimeMs;
+        logSize = st.size;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  let openPaths: Set<string>;
+
+  if (
+    cachedIdeaLogState &&
+    cachedIdeaLogState.logPath === logPath &&
+    cachedIdeaLogState.mtimeMs === logMtimeMs &&
+    cachedIdeaLogState.size === logSize &&
+    cachedIdeaLogState.xmlMtimeMs === xmlMtimeMs
+  ) {
+    openPaths = new Set<string>([...cachedIdeaLogState.openPaths, ...cliOpenPaths]);
+  } else {
+    openPaths = new Set<string>(cliOpenPaths);
+
+    // 1. Parse recentProjects.xml for opened="true"
+    try {
+      if (xmlPath && xmlMtimeMs > 0) {
+        const xml = fs.readFileSync(xmlPath, "utf-8");
+        const entryRegex =
+          /<entry\s+key="([^"]+)">[\s\S]*?<RecentProjectMetaInfo([^>]*)>/g;
+        let match;
+        while ((match = entryRegex.exec(xml)) !== null) {
+          const rawKey = match[1];
+          const attrs = match[2];
+          if (attrs.includes('opened="true"')) {
+            const resolved = rawKey.replace("$USER_HOME$", os.homedir());
+            openPaths.add(path.resolve(resolved));
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // 2. Parse only the last 512 KB of idea.log instead of the entire multi-megabyte file
+    try {
+      if (logPath && logSize > 0) {
+        const MAX_TAIL_BYTES = 512 * 1024;
+        const readSize = Math.min(logSize, MAX_TAIL_BYTES);
+        const startOffset = Math.max(0, logSize - readSize);
+        const fd = fs.openSync(logPath, "r");
+        let logContent = "";
+        try {
+          const buf = Buffer.allocUnsafe(readSize);
+          fs.readSync(fd, buf, 0, readSize, startOffset);
+          logContent = buf.toString("utf-8");
+        } finally {
+          fs.closeSync(fd);
+        }
+
         const nameToPath = new Map<string, string>();
         for (const p of openPaths) {
           nameToPath.set(path.basename(p), p);
@@ -333,12 +391,9 @@ export function getOpenPhpStormProjectPaths(): Set<string> {
 
         for (const line of logContent.split("\n")) {
           if (line.includes("IDE STARTED") || line.includes("IDE SHUTDOWN")) {
-            // Reset transient log state across full IDE restarts
             continue;
           }
 
-          // Match: Setting project frame to Project(name=ast, ..., componentStore=/home/stone/Projects/ast)
-          // or: Saving Project(name=ast, ..., componentStore=/home/stone/Projects/ast)
           const storeMatch = line.match(
             /Project\(name=([^,\s)]+)[^)]*componentStore=([^)\s]+)\)/
           );
@@ -351,7 +406,6 @@ export function getOpenPhpStormProjectPaths(): Set<string> {
             }
           }
 
-          // Match: Add project root /home/stone/Projects/ast to project ast
           const addRootMatch = line.match(
             /Add project root (\/[^\s]+) to project ([^\s(]+)/
           );
@@ -362,7 +416,6 @@ export function getOpenPhpStormProjectPaths(): Set<string> {
             openPaths.add(projPath);
           }
 
-          // Match: reason=project_closed, project=ast, path=/home/stone/Projects/ast
           const closedPathMatch = line.match(
             /reason=project_closed,\s*project=([^,\s]+),\s*path=(\/[^\s]+)/
           );
@@ -372,7 +425,6 @@ export function getOpenPhpStormProjectPaths(): Set<string> {
             recentPhpStormLaunches.delete(projPath);
           }
 
-          // Match: Project ast is removed from the list of initializing and open projects.
           const disposedMatch = line.match(
             /Project ([^\s]+) is removed from the list of initializing and open projects/
           );
@@ -386,9 +438,17 @@ export function getOpenPhpStormProjectPaths(): Set<string> {
           }
         }
       }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
+
+    cachedIdeaLogState = {
+      logPath,
+      mtimeMs: logMtimeMs,
+      size: logSize,
+      xmlMtimeMs,
+      openPaths: Array.from(openPaths),
+    };
   }
 
   // 3. Include any project launched via Orchestrator within the last 12 seconds while PhpStorm window initializes
@@ -722,7 +782,32 @@ function detectGitRemote(projectPath: string): string | null {
   }
 }
 
-export async function scanProjects(): Promise<ProjectInfo[]> {
+interface CachedProjectStaticMeta {
+  mtimeMs: number;
+  gitRemote: string | null;
+  composeFile: string | null;
+  hasDockerCompose: boolean;
+  composeServices: string[];
+  hasPhpStorm: boolean;
+  packageJsonLocations: PackageJsonLocation[];
+  hasPackageJson: boolean;
+  npmScripts: Record<string, string>;
+  envVars: Record<string, string>;
+  detectedUrls: string[];
+}
+
+const staticProjectCache = new Map<string, CachedProjectStaticMeta>();
+
+export function invalidateProjectStaticCache() {
+  staticProjectCache.clear();
+  cachedIdeaLogState = null;
+}
+
+export async function scanProjects(forceRefresh = false): Promise<ProjectInfo[]> {
+  if (forceRefresh) {
+    invalidateProjectStaticCache();
+  }
+
   const projectsRoot = getProjectsRoot();
   const savedConfigs = loadSavedConfigs();
   const runningContainers = await getRunningContainers();
@@ -739,38 +824,62 @@ export async function scanProjects(): Promise<ProjectInfo[]> {
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
     const projectPath = path.join(projectsRoot, entry.name);
     const resolvedProjectPath = path.resolve(projectPath);
-    const gitRemote = detectGitRemote(projectPath);
 
-    const composeCandidates = [
-      "docker-compose.yml",
-      "docker-compose.yaml",
-      "compose.yaml",
-      "compose.yml",
-    ];
-    let composeFile: string | null = null;
-    for (const candidate of composeCandidates) {
-      if (fs.existsSync(path.join(projectPath, candidate))) {
-        composeFile = candidate;
-        break;
-      }
+    let dirMtimeMs = 0;
+    try {
+      dirMtimeMs = fs.statSync(projectPath).mtimeMs;
+    } catch {
+      continue;
     }
 
-    const hasDockerCompose = composeFile !== null;
-    const composePath = composeFile ? path.join(projectPath, composeFile) : null;
-    const composeServices = composePath ? parseComposeServices(composePath) : [];
-    const composeContent = composePath ? fs.readFileSync(composePath, "utf-8") : "";
+    let meta = staticProjectCache.get(resolvedProjectPath);
+    if (!meta || meta.mtimeMs !== dirMtimeMs) {
+      const gitRemote = detectGitRemote(projectPath);
 
-    const hasPhpStorm = fs.existsSync(path.join(projectPath, ".idea"));
+      const composeCandidates = [
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "compose.yaml",
+        "compose.yml",
+      ];
+      let composeFile: string | null = null;
+      for (const candidate of composeCandidates) {
+        if (fs.existsSync(path.join(projectPath, candidate))) {
+          composeFile = candidate;
+          break;
+        }
+      }
+
+      const hasDockerCompose = composeFile !== null;
+      const composePath = composeFile ? path.join(projectPath, composeFile) : null;
+      const composeServices = composePath ? parseComposeServices(composePath) : [];
+      const composeContent = composePath ? fs.readFileSync(composePath, "utf-8") : "";
+      const hasPhpStorm = fs.existsSync(path.join(projectPath, ".idea"));
+      const packageJsonLocations = findPackageJsonLocations(projectPath);
+      const hasPackageJson = packageJsonLocations.length > 0;
+      const npmScripts = packageJsonLocations[0]?.scripts || {};
+      const envVars = parseEnvFile(path.join(projectPath, ".env"));
+      const detectedUrls = detectUrlsForProject(entry.name, projectPath, envVars, composeContent);
+
+      meta = {
+        mtimeMs: dirMtimeMs,
+        gitRemote,
+        composeFile,
+        hasDockerCompose,
+        composeServices,
+        hasPhpStorm,
+        packageJsonLocations,
+        hasPackageJson,
+        npmScripts,
+        envVars,
+        detectedUrls,
+      };
+      staticProjectCache.set(resolvedProjectPath, meta);
+    }
+
     const isPhpStormOpen =
       openPhpStormPaths.has(resolvedProjectPath) ||
       Array.from(openPhpStormPaths).some((p) => p.startsWith(resolvedProjectPath + path.sep));
-
-    const packageJsonLocations = findPackageJsonLocations(projectPath);
-    const hasPackageJson = packageJsonLocations.length > 0;
-    const npmScripts = packageJsonLocations[0]?.scripts || {};
-
-    const envVars = parseEnvFile(path.join(projectPath, ".env"));
-    const detectedUrls = detectUrlsForProject(entry.name, projectPath, envVars, composeContent);
 
     const projectContainers = runningContainers.filter((c) => {
       if (c.workingDir && path.resolve(c.workingDir) === resolvedProjectPath) {
@@ -779,7 +888,7 @@ export async function scanProjects(): Promise<ProjectInfo[]> {
       if (c.composeProject && c.composeProject.toLowerCase() === entry.name.toLowerCase()) {
         return true;
       }
-      if (envVars.PROJECT_NAME && c.name.startsWith(`${envVars.PROJECT_NAME}_`)) {
+      if (meta!.envVars.PROJECT_NAME && c.name.startsWith(`${meta!.envVars.PROJECT_NAME}_`)) {
         return true;
       }
       return false;
@@ -787,27 +896,27 @@ export async function scanProjects(): Promise<ProjectInfo[]> {
 
     const config = buildDefaultConfig(
       entry.name,
-      hasDockerCompose,
-      composeServices,
-      packageJsonLocations,
-      detectedUrls,
+      meta.hasDockerCompose,
+      meta.composeServices,
+      meta.packageJsonLocations,
+      meta.detectedUrls,
       savedConfigs[entry.name]
     );
 
     projects.push({
       name: entry.name,
       path: projectPath,
-      gitRemote,
-      hasDockerCompose,
-      composeFile,
-      composeServices,
-      hasPhpStorm,
+      gitRemote: meta.gitRemote,
+      hasDockerCompose: meta.hasDockerCompose,
+      composeFile: meta.composeFile,
+      composeServices: meta.composeServices,
+      hasPhpStorm: meta.hasPhpStorm,
       isPhpStormOpen,
-      hasPackageJson,
-      npmScripts,
-      packageJsonLocations,
-      detectedUrls,
-      detectedEnvProjectName: envVars.PROJECT_NAME || null,
+      hasPackageJson: meta.hasPackageJson,
+      npmScripts: meta.npmScripts,
+      packageJsonLocations: meta.packageJsonLocations,
+      detectedUrls: meta.detectedUrls,
+      detectedEnvProjectName: meta.envVars.PROJECT_NAME || null,
       runningContainers: projectContainers,
       isRunning: projectContainers.length > 0,
       config,
@@ -1408,9 +1517,10 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 
   try {
     if (req.method === "GET" && url === "/api/bootstrap") {
+      const force = (req.url || "").includes("force=1");
       const settings = loadSettings();
       const [projects, chromeProfiles] = await Promise.all([
-        scanProjects(),
+        scanProjects(force),
         Promise.resolve(getChromeProfiles()),
       ]);
       return sendJson(200, {
@@ -1425,7 +1535,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
     if (req.method === "POST" && url === "/api/settings") {
       const body = await readBody();
       const settings = saveSettings({ projectsRoot: body.projectsRoot });
-      const projects = await scanProjects();
+      const projects = await scanProjects(true);
       return sendJson(200, { settings, projects });
     }
 
