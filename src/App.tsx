@@ -21,6 +21,9 @@ import {
   Eye,
   EyeOff,
   KeyRound,
+  Info,
+  StickyNote,
+  X,
 } from "lucide-react";
 
 export interface CustomCommand {
@@ -221,6 +224,10 @@ export default function App() {
     | { type: "stop-all"; projectNames: string[] }
     | null
   >(null);
+
+  // Project Notes modal state
+  const [notesModalProject, setNotesModalProject] = useState<string | null>(null);
+  const [notesDraft, setNotesDraft] = useState("");
 
   // Inputs for adding URL or Command
   const [newUrlInput, setNewUrlInput] = useState("");
@@ -598,11 +605,96 @@ export default function App() {
     return steps.length > 0 ? steps.join(" → ") : "Open configured tools";
   };
 
+  const handleOpenNotesModal = (proj: ProjectInfo) => {
+    setNotesModalProject(proj.name);
+    setNotesDraft(proj.config.notes || "");
+  };
+
+  const handleSaveNotes = async () => {
+    if (!notesModalProject) return;
+    await updateProjectConfig(notesModalProject, { notes: notesDraft });
+    setNotesModalProject(null);
+  };
+
   const activeProcessCount = processes.filter((p) => p.running).length;
   const isAnyBusy = Boolean(busyProject) || stoppingAll;
 
   return (
     <div className="h-screen w-screen flex flex-col bg-[#0d1117] text-[#e6edf3] select-none overflow-hidden relative">
+      {/* PROJECT NOTES MODAL */}
+      {notesModalProject && (
+        <div
+          onClick={() => setNotesModalProject(null)}
+          className="fixed inset-0 bg-black/70 backdrop-blur-[2px] z-50 flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-lg bg-[#161b22] border border-[#30363d] rounded-lg shadow-2xl p-5 space-y-4"
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-[#30363d] pb-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="p-1.5 rounded-md bg-[#238636]/20 border border-[#238636] text-[#3fb950] shrink-0">
+                  <StickyNote className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-white truncate">
+                    Notes — {notesModalProject}
+                  </h3>
+                  <p className="text-[11px] text-[#8b949e]">
+                    Saved locally in ~/.config/orchestrator/projects.json
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setNotesModalProject(null)}
+                className="text-[#8b949e] hover:text-white transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <textarea
+              value={notesDraft}
+              onChange={(e) => setNotesDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                  handleSaveNotes();
+                } else if (e.key === "Escape") {
+                  setNotesModalProject(null);
+                }
+              }}
+              placeholder="Write project notes, credentials, test accounts, URLs, or reminders..."
+              rows={9}
+              autoFocus
+              className="w-full p-3 rounded-md bg-[#090d11] border border-[#30363d] text-xs font-mono text-[#e6edf3] placeholder-[#484f58] focus:outline-none focus:border-[#238636] resize-y select-text"
+            />
+
+            <div className="flex items-center justify-between gap-2 pt-2 border-t border-[#30363d]">
+              <span className="text-[11px] text-[#484f58]">
+                Tip: Press Ctrl+Enter to save
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setNotesModalProject(null)}
+                  className="h-8 px-3 rounded-md bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-xs font-medium text-[#e6edf3] transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveNotes}
+                  className={`h-8 px-3.5 rounded-md text-xs font-semibold transition cursor-pointer ${BTN_GREEN}`}
+                >
+                  Save Notes
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* "ARE YOU SURE?" CONFIRMATION MODAL FOR STOP & STOP ALL */}
       {confirmAction && (
         <div
@@ -849,9 +941,9 @@ export default function App() {
           <div className="flex-1 overflow-y-auto">
             {/* Table Column Headers (Hidden on narrow screens) */}
             <div className="hidden md:grid md:grid-cols-12 gap-4 px-5 py-2 bg-[#161b22]/60 border-b border-[#30363d] text-[11px] font-semibold uppercase tracking-wider text-[#8b949e] sticky top-0 z-10 backdrop-blur">
-              <div className="col-span-4">Project</div>
+              <div className="col-span-3">Project</div>
               <div className="col-span-3">Details</div>
-              <div className="col-span-5 text-right">Actions</div>
+              <div className="col-span-6 text-right">Actions</div>
             </div>
 
             {filteredProjects.length === 0 ? (
@@ -869,6 +961,8 @@ export default function App() {
                     (proj.config.urls && proj.config.urls[0]) ||
                     proj.detectedUrls[0] ||
                     null;
+                  const hasNotes = Boolean(proj.config.notes && proj.config.notes.trim().length > 0);
+                  const switchSummary = getSwitchSummary(proj);
 
                   return (
                     <div
@@ -879,8 +973,8 @@ export default function App() {
                           : "hover:bg-[#161b22]"
                       }`}
                     >
-                      {/* Col 1: Favorite + Status Dot + Project Name + What Activate Does */}
-                      <div className="md:col-span-4 flex items-center gap-3 min-w-0">
+                      {/* Col 1: Favorite + Status Dot + Project Name + Hover Info Tooltip */}
+                      <div className="md:col-span-3 flex items-center gap-3 min-w-0">
                         <button
                           onClick={() =>
                             updateProjectConfig(proj.name, {
@@ -891,7 +985,7 @@ export default function App() {
                           title="Pin to top"
                           className={`shrink-0 cursor-pointer ${
                             proj.config.favorite
-                              ? "text-[#e3b341]"
+                              ? "text-[#3fb950]"
                               : "text-[#30363d] hover:text-[#8b949e]"
                           }`}
                         >
@@ -909,7 +1003,7 @@ export default function App() {
                         />
 
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-1.5">
                             <button
                               onClick={() => setSelectedName(proj.name)}
                               disabled={isAnyBusy}
@@ -917,19 +1011,47 @@ export default function App() {
                             >
                               {proj.name}
                             </button>
+
+                            {/* Info icon with hover popover displaying the Activation flow */}
+                            <div className="relative group/info shrink-0 flex items-center">
+                              <span
+                                title={`On Activate: ${switchSummary}`}
+                                className="text-[#8b949e] hover:text-[#e6edf3] p-0.5 rounded transition cursor-help"
+                              >
+                                <Info className="w-3.5 h-3.5" />
+                              </span>
+                              <div className="hidden group-hover/info:block absolute left-0 top-full mt-1.5 z-30 w-max max-w-xs sm:max-w-sm px-3 py-2 rounded-md bg-[#161b22] border border-[#30363d] shadow-xl text-[11px] text-[#e6edf3] pointer-events-none">
+                                <div className="font-semibold text-[#3fb950] mb-0.5">
+                                  On Activate
+                                </div>
+                                <div className="text-[#8b949e] whitespace-normal leading-relaxed">
+                                  {switchSummary}
+                                </div>
+                                {proj.isRunning && (
+                                  <div className="mt-1 pt-1 border-t border-[#30363d] text-[#3fb950]">
+                                    Running:{" "}
+                                    {proj.runningContainers
+                                      .map((c) => c.composeService || c.name)
+                                      .join(", ")}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
                             {proj.isRunning && (
                               <span className="px-2 py-0.5 text-[10px] font-semibold bg-[#238636]/20 text-[#3fb950] border border-[#238636] rounded shrink-0">
                                 ACTIVE ({proj.runningContainers.length})
                               </span>
                             )}
                           </div>
-                          <div className="text-[11px] text-[#8b949e] truncate mt-0.5">
-                            {proj.isRunning
-                              ? `Running: ${proj.runningContainers
-                                  .map((c) => c.composeService || c.name)
-                                  .join(", ")}`
-                              : getSwitchSummary(proj)}
-                          </div>
+                          {proj.isRunning && (
+                            <div className="text-[11px] text-[#8b949e] truncate mt-0.5">
+                              Running:{" "}
+                              {proj.runningContainers
+                                .map((c) => c.composeService || c.name)
+                                .join(", ")}
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -957,7 +1079,7 @@ export default function App() {
                       </div>
 
                       {/* Col 3: Action Buttons */}
-                      <div className="md:col-span-5 flex flex-wrap items-center md:justify-end gap-2 pl-7 md:pl-0">
+                      <div className="md:col-span-6 flex flex-wrap items-center md:justify-end gap-2 pl-7 md:pl-0">
                         {proj.isRunning ? (
                           <button
                             onClick={() => handleRequestStopDocker(proj)}
@@ -976,7 +1098,7 @@ export default function App() {
                           <button
                             onClick={() => handleSwitchProject(proj.name)}
                             disabled={isAnyBusy}
-                            title={getSwitchSummary(proj)}
+                            title={switchSummary}
                             className={`w-28 h-8 whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5 px-3 rounded-md text-xs font-medium transition cursor-pointer ${BTN_GREEN}`}
                           >
                             {isBusy ? (
@@ -1014,6 +1136,24 @@ export default function App() {
                         >
                           <Globe className="w-3.5 h-3.5 shrink-0 text-[#8b949e]" />
                           <span>Chrome</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleOpenNotesModal(proj)}
+                          disabled={isAnyBusy}
+                          title={
+                            hasNotes
+                              ? `Notes: ${proj.config.notes}`
+                              : "Add or view project notes"
+                          }
+                          className="h-8 whitespace-nowrap shrink-0 px-2.5 rounded-md bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-[#e6edf3] text-xs font-medium flex items-center gap-1.5 transition cursor-pointer"
+                        >
+                          <StickyNote
+                            className={`w-3.5 h-3.5 shrink-0 ${
+                              hasNotes ? "text-[#3fb950]" : "text-[#8b949e]"
+                            }`}
+                          />
+                          <span>Notes</span>
                         </button>
 
                         <button
@@ -1138,6 +1278,26 @@ export default function App() {
                   >
                     <Terminal className="w-3.5 h-3.5 shrink-0" />
                     <span>Host Terminal</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleOpenNotesModal(selectedProject)}
+                    disabled={isAnyBusy}
+                    title={
+                      selectedProject.config.notes?.trim()
+                        ? `Notes: ${selectedProject.config.notes}`
+                        : "Add or view project notes"
+                    }
+                    className="h-8 whitespace-nowrap shrink-0 flex items-center gap-1.5 px-3 rounded-md bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-[#e6edf3] text-xs font-medium transition cursor-pointer"
+                  >
+                    <StickyNote
+                      className={`w-3.5 h-3.5 shrink-0 ${
+                        selectedProject.config.notes?.trim()
+                          ? "text-[#3fb950]"
+                          : "text-[#8b949e]"
+                      }`}
+                    />
+                    <span>Notes</span>
                   </button>
 
                   {(selectedProject.config.sshSessions || []).map((ssh, idx) => (
