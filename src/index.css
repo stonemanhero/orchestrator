@@ -54,19 +54,6 @@ button:disabled {
   pointer-events: none;
 }
 
-/* Optical vertical alignment for icons paired with text across the app */
-svg.lucide {
-  flex-shrink: 0;
-  vertical-align: middle;
-}
-
-button:has(span) > svg.lucide,
-.flex > svg.lucide:not(:only-child),
-.inline-flex > svg.lucide:not(:only-child) {
-  position: relative;
-  top: -1px;
-}
-
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

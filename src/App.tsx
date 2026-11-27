@@ -811,7 +811,7 @@ export default function App() {
                 disabled={isAnyBusy}
                 className="h-8 flex items-center gap-1.5 px-3 rounded-md bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-xs font-medium text-[#e6edf3] transition cursor-pointer"
               >
-                <ArrowLeft className="w-3.5 h-3.5 shrink-0" />
+                <ArrowLeft className="w-3.5 h-3.5" />
                 <span>Back to All Projects</span>
               </button>
             ) : (
@@ -831,10 +831,10 @@ export default function App() {
                     title="Click to change your root Projects directory"
                     className="h-7 px-2.5 rounded-md bg-[#090d11] hover:bg-[#21262d] border border-[#30363d] text-xs text-[#8b949e] hover:text-[#e6edf3] flex items-center gap-1.5 font-mono transition cursor-pointer"
                   >
-                    <FolderOpen className="w-3.5 h-3.5 text-[#3fb950] shrink-0" />
+                    <FolderOpen className="w-3.5 h-3.5 text-[#3fb950]" />
                     <span>{projectsRoot}</span>
                     <span className="text-[11px] text-[#484f58]">({projects.length})</span>
-                    <Edit3 className="w-3 h-3 text-[#8b949e] ml-0.5 shrink-0" />
+                    <Edit3 className="w-3 h-3 text-[#8b949e] ml-0.5" />
                   </button>
                 ) : (
                   <div className="flex flex-wrap items-center gap-1.5">
@@ -905,7 +905,7 @@ export default function App() {
                   : "bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-[#e6edf3]"
               }`}
             >
-              <Terminal className="w-3.5 h-3.5 shrink-0" />
+              <Terminal className="w-3.5 h-3.5" />
               <span>
                 {activeProcessCount > 0
                   ? `Task Output (${activeProcessCount} running)`
@@ -1055,9 +1055,9 @@ export default function App() {
                             <div className="relative group/info shrink-0 flex items-center">
                               <span
                                 title={`On Activate: ${switchSummary}`}
-                                className="text-[#8b949e] hover:text-[#e6edf3] p-0.5 rounded transition cursor-help flex items-center"
+                                className="text-[#8b949e] hover:text-[#e6edf3] p-0.5 rounded transition cursor-help"
                               >
-                                <Info className="w-3.5 h-3.5 shrink-0" />
+                                <Info className="w-3.5 h-3.5" />
                               </span>
                               <div className="hidden group-hover/info:block absolute left-0 top-full mt-1.5 z-30 w-max max-w-xs sm:max-w-sm px-3 py-2 rounded-md bg-[#161b22] border border-[#30363d] shadow-xl text-[11px] text-[#e6edf3] pointer-events-none">
                                 <div className="font-semibold text-[#3fb950] mb-0.5">
@@ -1393,9 +1393,9 @@ export default function App() {
                                     setSshDropdownOpen(false);
                                     handleOpenSsh(selectedProject.name, ssh);
                                   }}
-                                  className="w-full px-3 py-2 text-left hover:bg-[#21262d] transition flex items-center gap-2.5 cursor-pointer"
+                                  className="w-full px-3 py-2 text-left hover:bg-[#21262d] transition flex items-start gap-2.5 cursor-pointer"
                                 >
-                                  <KeyRound className="w-3.5 h-3.5 text-[#3fb950] shrink-0" />
+                                  <KeyRound className="w-3.5 h-3.5 text-[#3fb950] shrink-0 mt-0.5" />
                                   <div className="min-w-0 flex-1">
                                     <div className="text-xs font-semibold text-[#e6edf3] truncate">
                                       {ssh.label || `SSH Session #${idx + 1}`}
@@ -1536,7 +1536,7 @@ export default function App() {
                       disabled={isAnyBusy}
                       className="text-xs text-[#3fb950] hover:underline flex items-center gap-1 cursor-pointer"
                     >
-                      <ExternalLink className="w-3 h-3 shrink-0" />
+                      <ExternalLink className="w-3 h-3" />
                       <span>Open All in Chrome</span>
                     </button>
                   </div>
@@ -1692,7 +1692,7 @@ export default function App() {
                                 title={`Open interactive bash/sh terminal inside running ${svc} container`}
                                 className="h-8 px-2.5 rounded bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-xs text-[#e6edf3] flex items-center gap-1.5 shrink-0 cursor-pointer"
                               >
-                                <Terminal className="w-3.5 h-3.5 shrink-0" />
+                                <Terminal className="w-3.5 h-3.5" />
                                 <span>Container Shell</span>
                               </button>
                             )}
@@ -1752,7 +1752,7 @@ export default function App() {
                                 disabled={isAnyBusy}
                                 className={`h-8 px-3 rounded-md text-xs font-medium flex items-center gap-1 shrink-0 cursor-pointer ${BTN_GREEN}`}
                               >
-                                <Play className="w-3 h-3 shrink-0" />
+                                <Play className="w-3 h-3" />
                                 <span>{isWpCli ? "Run WP-CLI" : "Run"}</span>
                               </button>
                             </div>
@@ -1808,7 +1808,7 @@ export default function App() {
                                 : "Host"}
                             </span>
                             <span className="text-[11px] px-2 py-0.5 rounded bg-[#238636]/20 text-[#3fb950] border border-[#238636] font-mono flex items-center gap-1">
-                              <FolderOpen className="w-3 h-3 shrink-0" />
+                              <FolderOpen className="w-3 h-3" />
                               {dirDisplay}
                             </span>
                           </div>
@@ -1892,7 +1892,7 @@ export default function App() {
                             disabled={isAnyBusy}
                             className={`h-8 px-3 rounded text-xs font-medium flex items-center gap-1 whitespace-nowrap cursor-pointer ${BTN_GREEN}`}
                           >
-                            <Play className="w-3 h-3 shrink-0" />
+                            <Play className="w-3 h-3" />
                             <span>Run Now</span>
                           </button>
 
@@ -2059,7 +2059,7 @@ export default function App() {
               <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4 sm:p-5 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#30363d] pb-2">
                   <div className="flex items-center gap-2">
-                    <KeyRound className="w-4 h-4 text-[#3fb950] shrink-0" />
+                    <KeyRound className="w-4 h-4 text-[#3fb950]" />
                     <h2 className="text-sm font-semibold text-white">
                       5. SSH Sessions
                     </h2>
@@ -2158,7 +2158,7 @@ export default function App() {
                                     }))
                                   }
                                   title={isPassVisible ? "Hide password" : "Show password"}
-                                  className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center text-[#8b949e] hover:text-[#e6edf3] cursor-pointer"
+                                  className="absolute right-2 text-[#8b949e] hover:text-[#e6edf3] cursor-pointer"
                                 >
                                   {isPassVisible ? (
                                     <EyeOff className="w-3.5 h-3.5" />
@@ -2180,7 +2180,7 @@ export default function App() {
                               className="h-8 px-3 rounded-md bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-[#e6edf3] text-xs font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
                             >
                               <RefreshCw
-                                className={`w-3.5 h-3.5 text-[#3fb950] shrink-0 ${
+                                className={`w-3.5 h-3.5 text-[#3fb950] ${
                                   testState?.testing ? "animate-spin" : ""
                                 }`}
                               />
@@ -2195,7 +2195,7 @@ export default function App() {
                               onClick={() => handleOpenSsh(selectedProject.name, ssh)}
                               className={`h-8 px-3 rounded-md text-xs font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${BTN_GREEN}`}
                             >
-                              <KeyRound className="w-3.5 h-3.5 shrink-0" />
+                              <KeyRound className="w-3.5 h-3.5" />
                               <span>SSH Access</span>
                             </button>
 
@@ -2303,7 +2303,7 @@ export default function App() {
                             type="button"
                             onClick={() => setShowNewSshPass(!showNewSshPass)}
                             title={showNewSshPass ? "Hide password" : "Show password"}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center text-[#8b949e] hover:text-[#e6edf3] cursor-pointer"
+                            className="absolute right-2 text-[#8b949e] hover:text-[#e6edf3] cursor-pointer"
                           >
                             {showNewSshPass ? (
                               <EyeOff className="w-3.5 h-3.5" />
@@ -2330,7 +2330,7 @@ export default function App() {
                         className="h-8 px-3 rounded-md bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] text-[#e6edf3] text-xs font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
                       >
                         <RefreshCw
-                          className={`w-3.5 h-3.5 text-[#3fb950] shrink-0 ${
+                          className={`w-3.5 h-3.5 text-[#3fb950] ${
                             sshTestStatus["new"]?.testing ? "animate-spin" : ""
                           }`}
                         />
