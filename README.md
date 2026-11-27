@@ -4,6 +4,16 @@ A native Linux desktop application that discovers and manages all local developm
 
 ---
 
+## Screenshots
+
+### Projects Overview
+![Projects Overview](docs/screenshots/projects-list.png)
+
+### Manage Project Details
+![Manage Project Details](docs/screenshots/projects-details.png)
+
+---
+
 ## Features
 
 - **One-Click Project Activation (`Activate` / `Launch IDE & Browser`)**
